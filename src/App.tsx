@@ -10,6 +10,7 @@ export default function App() {
   const [shortcutText, setShortcutText] = useState("CommandOrControl+Shift+0");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [userPrompt, setUserPrompt] = useState("");
+  const [enableThinking, setEnableThinking] = useState(true);
   const [isSaved, setIsSaved] = useState(false);
 
   const handleShortcutKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -51,6 +52,9 @@ export default function App() {
 
       const storedUser = await store.get<{ value: string }>("userPrompt");
       if (storedUser?.value) setUserPrompt(storedUser.value);
+
+      const storedThink = await store.get<{ value: boolean }>("enableThinking");
+      if (storedThink !== null && storedThink !== undefined) setEnableThinking(storedThink.value);
     }
     loadSettings();
   }, []);
@@ -63,6 +67,7 @@ export default function App() {
     await store.set("shortcutText", { value: shortcutText });
     await store.set("systemPrompt", { value: systemPrompt });
     await store.set("userPrompt", { value: userPrompt });
+    await store.set("enableThinking", { value: enableThinking });
     await store.save();
 
     // Call rust command to re-register shortcut if changed
@@ -175,6 +180,18 @@ export default function App() {
                 className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all font-sans text-sm h-28 resize-none custom-scrollbar"
                 placeholder="Ví dụ: Phân tích ảnh này. Dùng biến {prompt}"
               />
+            </div>
+
+            <div className="col-span-1 md:col-span-2 flex items-center pt-2">
+              <label className="flex items-center gap-3 text-sm font-medium text-zinc-300 cursor-pointer hover:text-white transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={enableThinking}
+                  onChange={(e) => setEnableThinking(e.target.checked)}
+                  className="w-4 h-4 cursor-pointer accent-blue-500"
+                />
+                Bật hiện Thinking Mode trong cuộc trò chuyện (Với các model có tag &lt;think&gt;)
+              </label>
             </div>
           </div>
         </div>

@@ -43,28 +43,12 @@ fn hide_prompt(app: AppHandle) {
 }
 
 #[tauri::command]
-async fn ask_ai(endpoint: String, api_key: String, model: String, system_prompt: String, prompt: String, image_data: String) -> Result<String, String> {
+async fn ask_ai(endpoint: String, api_key: String, model: String, messages: serde_json::Value) -> Result<String, String> {
     use reqwest::Client;
     use serde_json::json;
 
     let client = Client::new();
     
-    let mut messages = Vec::new();
-    if !system_prompt.trim().is_empty() {
-        messages.push(json!({
-            "role": "system",
-            "content": system_prompt
-        }));
-    }
-    
-    messages.push(json!({
-        "role": "user",
-        "content": [
-            { "type": "text", "text": prompt },
-            { "type": "image_url", "image_url": { "url": image_data } }
-        ]
-    }));
-
     let body = json!({
         "model": model,
         "messages": messages
@@ -89,10 +73,20 @@ async fn ask_ai(endpoint: String, api_key: String, model: String, system_prompt:
 
     let json_res: serde_json::Value = res.json().await.map_err(|e| format!("Parse Error: {}", e))?;
     
-    if let Some(content) = json_res["choices"][0]["message"]["content"].as_str() {
-        Ok(content.to_string())
-    } else {
+    let message = &json_res["choices"][0]["message"];
+    let content = message["content"].as_str().unwrap_or("");
+    let reasoning = message["reasoning_content"].as_str().unwrap_or("");
+    
+    let mut final_content = String::new();
+    if !reasoning.is_empty() {
+        final_content.push_str(&format!("<think>\n{}\n</think>\n\n", reasoning));
+    }
+    final_content.push_str(content);
+    
+    if final_content.is_empty() {
         Err("Invalid JSON response from AI".into())
+    } else {
+        Ok(final_content)
     }
 }
 

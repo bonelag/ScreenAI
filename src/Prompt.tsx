@@ -18,7 +18,7 @@ export default function Prompt() {
   
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<string | null>(null);
+  const [chatHistory, setChatHistory] = useState<{ role: string, content: any }[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const [chatPos, setChatPos] = useState<{ x: number, y: number } | null>(null);
@@ -27,6 +27,13 @@ export default function Prompt() {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+  const chatContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
+  }, [chatHistory, loading]);
 
   useEffect(() => {
     if (isDraggingChat) {
@@ -68,7 +75,7 @@ export default function Prompt() {
   }, []);
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (hasCropped || result || loading) return;
+    if (hasCropped || chatHistory.length > 0 || loading) return;
     setStartX(e.clientX);
     setStartY(e.clientY);
     setCurrentX(e.clientX);
@@ -129,10 +136,9 @@ export default function Prompt() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if ((!croppedImage && !fullImage) || loading) return;
+    if ((chatHistory.length === 0 && !croppedImage && !fullImage) || loading || (chatHistory.length > 0 && !prompt.trim())) return;
 
     setLoading(true);
-    setResult(null);
     setError(null);
 
     try {
@@ -142,6 +148,7 @@ export default function Prompt() {
       const model = await store.get<{ value: string }>("model");
       const storedSys = await store.get<{ value: string }>("systemPrompt");
       const storedUser = await store.get<{ value: string }>("userPrompt");
+      const storedThink = await store.get<{ value: boolean }>("enableThinking");
 
       const imgData = croppedImage || fullImage;
 
@@ -155,20 +162,52 @@ export default function Prompt() {
       const userPromptTpl = storedUser?.value || "{prompt}";
       
       const promptContent = prompt.trim() || " ";
-      const finalPrompt = userPromptTpl.includes("{prompt}") 
-                          ? userPromptTpl.replace("{prompt}", promptContent) 
-                          : `${userPromptTpl}\n\n${promptContent}`;
+      let newMessages = [...chatHistory];
+
+      if (newMessages.length === 0) {
+        if (sysPromptVal.trim()) {
+          newMessages.push({ role: "system", content: sysPromptVal });
+        }
+        const finalPrompt = userPromptTpl.includes("{prompt}") 
+                            ? userPromptTpl.replace("{prompt}", promptContent) 
+                            : `${userPromptTpl}\n\n${promptContent}`;
+        newMessages.push({
+          role: "user",
+          content: [
+            { type: "text", text: finalPrompt },
+            { type: "image_url", image_url: { url: imgData } }
+          ]
+        });
+      } else {
+        if (promptContent.trim()) {
+          newMessages.push({ role: "user", content: promptContent });
+        }
+      }
+
+      setChatHistory(newMessages);
+      setPrompt("");
 
       const response = await invoke<string>("ask_ai", {
         endpoint: endpointValue,
         apiKey: apiKeyValue,
         model: modelValue,
-        systemPrompt: sysPromptVal,
-        prompt: finalPrompt,
-        imageData: imgData
+        messages: newMessages
       });
 
-      setResult(response);
+      let finalResponse = response;
+      const enableThinkingState = storedThink !== null && storedThink !== undefined ? storedThink.value : true;
+
+      if (!enableThinkingState) {
+        // Strip out the thinking section entirely
+        finalResponse = finalResponse.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      } else {
+        // Format the think tags nicely into Markdown quotes
+        finalResponse = finalResponse.replace(/<think>([\s\S]*?)<\/think>/gi, (_match: string, p1: string) => {
+            return `🤔 **Quá trình suy nghĩ:**\n${p1.trim().split('\n').map((line: string) => `> ${line}`).join('\n')}\n\n---\n\n`;
+        });
+      }
+
+      setChatHistory([...newMessages, { role: "assistant", content: finalResponse }]);
     } catch (err: any) {
       setError(err.toString());
     } finally {
@@ -179,8 +218,9 @@ export default function Prompt() {
   const resetSelection = () => {
     setHasCropped(false);
     setCroppedImage(null);
-    setResult(null);
+    setChatHistory([]);
     setChatPos(null);
+    setPrompt("");
   };
   
   if (!fullImage) return null;
@@ -201,10 +241,10 @@ export default function Prompt() {
       <img ref={imgRef} src={fullImage} className="absolute inset-0 w-full h-full object-fill pointer-events-none" />
       
       {/* Dark overlay when cropping */}
-      {(!hasCropped && (!result)) && (
+      {(!hasCropped && chatHistory.length === 0) && (
         <div className="absolute inset-0 bg-black/40 cursor-crosshair" />
       )}
-      {hasCropped && !result && (
+      {hasCropped && chatHistory.length === 0 && (
         <div className="absolute inset-0 bg-black/70 transition-colors duration-300" />
       )}
 
@@ -234,7 +274,7 @@ export default function Prompt() {
       <canvas ref={canvasRef} className="hidden" />
 
       {/* Instructions */}
-      {!hasCropped && (
+      {!hasCropped && chatHistory.length === 0 && (
         <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/70 text-white px-4 py-2 rounded-full backdrop-blur text-sm pointer-events-none animate-pulse">
           Kéo thả để chọn vùng màn hình. (Esc để thoát)
         </div>
@@ -249,7 +289,7 @@ export default function Prompt() {
       </button>
 
       {/* Chat UI when cropped */}
-      {(hasCropped || result) && (
+      {(hasCropped || chatHistory.length > 0) && (
         <div 
           className="absolute z-50 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl flex flex-col w-[400px] overflow-hidden"
           style={{
@@ -276,22 +316,33 @@ export default function Prompt() {
           </div>
 
           {/* Result Area */}
-          {(result || error || loading) && (
-            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-zinc-900/50 min-h-[100px] max-h-[400px]">
-              {loading ? (
-                <div className="flex items-center gap-2 text-zinc-400 justify-center h-full float-animation">
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span className="text-sm">Đang suy nghĩ...</span>
+          {(chatHistory.length > 0 || loading || error) && (
+            <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-zinc-900/50 min-h-[100px] max-h-[400px] space-y-4">
+              {chatHistory.filter(m => m.role !== 'system').map((msg, idx) => (
+                <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`p-3 rounded-2xl max-w-[85%] ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-300'} prose prose-sm prose-invert leading-relaxed overflow-hidden break-words shrink-0`}>
+                    {msg.role === 'user' ? (
+                      <div className="whitespace-pre-wrap">{typeof msg.content === 'string' ? msg.content : msg.content.find((c:any) => c.type === 'text')?.text}</div>
+                    ) : (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {msg.content || ""}
+                      </ReactMarkdown>
+                    )}
+                  </div>
                 </div>
-              ) : error ? (
+              ))}
+
+              {loading && (
+                <div className="flex items-center justify-start">
+                  <div className="flex items-center gap-2 text-zinc-400 p-3 rounded-2xl bg-zinc-800 float-animation w-auto">
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span className="text-sm">Đang suy nghĩ...</span>
+                  </div>
+                </div>
+              )}
+              {error && (
                 <div className="p-3 bg-red-500/10 text-red-400 rounded-xl border border-red-500/20 text-sm">
                   {error}
-                </div>
-              ) : (
-                <div className="prose prose-sm prose-invert max-w-none text-zinc-300 leading-relaxed overflow-hidden">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {result || ""}
-                  </ReactMarkdown>
                 </div>
               )}
             </div>
@@ -317,7 +368,7 @@ export default function Prompt() {
               />
               <button
                 type="submit"
-                disabled={(!croppedImage && !fullImage) || loading}
+                disabled={loading || (chatHistory.length === 0 ? (!croppedImage && !fullImage) : !prompt.trim())}
                 className="p-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl transition-colors shrink-0"
               >
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
