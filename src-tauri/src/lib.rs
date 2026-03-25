@@ -4,6 +4,8 @@ use xcap::Monitor;
 use base64::{engine::general_purpose, Engine as _};
 use std::io::Cursor;
 use std::sync::Mutex;
+use std::str::FromStr;
+use tauri_plugin_store::StoreExt;
 
 struct AppState {
     last_screenshot: Mutex<Option<String>>,
@@ -20,12 +22,78 @@ fn get_last_screenshot(state: tauri::State<AppState>) -> Result<String, String> 
 }
 
 #[tauri::command]
-fn register_shortcut(app: AppHandle, _shortcut: String) -> Result<(), String> {
-    // Basic implementation: for simplicity here we register a fixed shortcut to avoid parsing strings
-    // In a real app we'd parse this string to get Modifiers and Code
-    // First, unregister any existing.
-    let _ = app.plugin(tauri_plugin_global_shortcut::Builder::new().build());
-    Ok(())
+fn register_shortcut(app: AppHandle, shortcut: String) -> Result<(), String> {
+    let _ = app.global_shortcut().unregister_all();
+    
+    if let Ok(parsed_shortcut) = Shortcut::from_str(&shortcut) {
+        if let Err(e) = app.global_shortcut().register(parsed_shortcut) {
+            return Err(format!("Failed to register shortcut: {}", e));
+        }
+        Ok(())
+    } else {
+        Err(format!("Invalid shortcut format: {}", shortcut))
+    }
+}
+
+#[tauri::command]
+fn hide_prompt(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("prompt") {
+        let _ = win.hide();
+    }
+}
+
+#[tauri::command]
+async fn ask_ai(endpoint: String, api_key: String, model: String, system_prompt: String, prompt: String, image_data: String) -> Result<String, String> {
+    use reqwest::Client;
+    use serde_json::json;
+
+    let client = Client::new();
+    
+    let mut messages = Vec::new();
+    if !system_prompt.trim().is_empty() {
+        messages.push(json!({
+            "role": "system",
+            "content": system_prompt
+        }));
+    }
+    
+    messages.push(json!({
+        "role": "user",
+        "content": [
+            { "type": "text", "text": prompt },
+            { "type": "image_url", "image_url": { "url": image_data } }
+        ]
+    }));
+
+    let body = json!({
+        "model": model,
+        "messages": messages
+    });
+
+    let mut req = client.post(&endpoint).header("Content-Type", "application/json");
+        
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let res = req.json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network Error: {}", e))?;
+
+    if !res.status().is_success() {
+        let status = res.status();
+        let error_text = res.text().await.unwrap_or_default();
+        return Err(format!("API Error ({}): {}", status, error_text));
+    }
+
+    let json_res: serde_json::Value = res.json().await.map_err(|e| format!("Parse Error: {}", e))?;
+    
+    if let Some(content) = json_res["choices"][0]["message"]["content"].as_str() {
+        Ok(content.to_string())
+    } else {
+        Err("Invalid JSON response from AI".into())
+    }
 }
 
 fn capture_and_show_prompt(app: AppHandle) {
@@ -50,13 +118,16 @@ fn capture_and_show_prompt(app: AppHandle) {
                 }
             };
             
+            // Convert Rgba8 to Rgb8 since JPEG does not support Alpha channel
+            let rgb_image = image::DynamicImage::ImageRgba8(image).into_rgb8();
+            
             let mut buffer = Cursor::new(Vec::new());
-            if let Err(e) = image.write_to(&mut buffer, image::ImageFormat::Jpeg) {
+            if let Err(e) = rgb_image.write_to(&mut buffer, image::ImageFormat::Jpeg) {
                 eprintln!("Failed to encode: {}", e);
                 return;
             }
             
-            let base_64 = general_purpose::STANDARD.encode(buffer.into_inner());
+            let base_64 = base64::engine::general_purpose::STANDARD.encode(buffer.into_inner());
             let data_uri = format!("data:image/jpeg;base64,{}", base_64);
             
             let state: tauri::State<AppState> = app_handle.state();
@@ -88,8 +159,6 @@ fn capture_and_show_prompt(app: AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let ctrl_shift_o = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
-
     tauri::Builder::default()
         .manage(AppState {
             last_screenshot: Mutex::new(None),
@@ -97,19 +166,29 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, shortcut, event| {
+                .with_handler(move |app, _shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
-                        if shortcut == &ctrl_shift_o {
-                            capture_and_show_prompt(app.clone());
-                        }
+                        capture_and_show_prompt(app.clone());
                     }
                 })
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcut])
+        .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcut, hide_prompt, ask_ai])
         .setup(move |app| {
-            app.global_shortcut().register(ctrl_shift_o).unwrap();
+            let default_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
+            let mut shortcut = default_shortcut;
+            
+            if let Ok(store) = app.store("settings.json") {
+                if let Some(val) = store.get("shortcutText") {
+                    if let Some(s) = val.get("value").and_then(|v| v.as_str()) {
+                        if let Ok(parsed) = Shortcut::from_str(s) {
+                            shortcut = parsed;
+                        }
+                    }
+                }
+            }
+            let _ = app.global_shortcut().register(shortcut);
             Ok(())
         })
         .run(tauri::generate_context!())

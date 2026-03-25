@@ -1,5 +1,5 @@
 {
-  "name": "ai-on-screen",
+  "name": "ScreenAI",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -16,9 +16,12 @@
     "@tauri-apps/plugin-store": "^2.4.2",
     "lucide-react": "^1.6.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "@tauri-apps/cli": "^2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",

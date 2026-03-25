@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
 import { Send, Loader2, X, Maximize } from "lucide-react";
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 export default function Prompt() {
   const [fullImage, setFullImage] = useState<string | null>(null);
@@ -20,8 +21,31 @@ export default function Prompt() {
   const [result, setResult] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [chatPos, setChatPos] = useState<{ x: number, y: number } | null>(null);
+  const [isDraggingChat, setIsDraggingChat] = useState(false);
+  const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+
+  useEffect(() => {
+    if (isDraggingChat) {
+      const handleMove = (e: MouseEvent) => {
+        setChatPos({
+          x: e.clientX - dragOffset.x,
+          y: e.clientY - dragOffset.y,
+        });
+      };
+      const handleUp = () => setIsDraggingChat(false);
+      
+      window.addEventListener('mousemove', handleMove);
+      window.addEventListener('mouseup', handleUp);
+      return () => {
+        window.removeEventListener('mousemove', handleMove);
+        window.removeEventListener('mouseup', handleUp);
+      };
+    }
+  }, [isDraggingChat, dragOffset]);
 
   useEffect(() => {
     async function init() {
@@ -36,7 +60,7 @@ export default function Prompt() {
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        getCurrentWindow().hide();
+        invoke("hide_prompt").catch(console.error);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -105,7 +129,7 @@ export default function Prompt() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!prompt.trim() || (!croppedImage && !fullImage) || loading) return;
+    if ((!croppedImage && !fullImage) || loading) return;
 
     setLoading(true);
     setResult(null);
@@ -116,39 +140,37 @@ export default function Prompt() {
       const endpoint = await store.get<{ value: string }>("endpoint");
       const apiKey = await store.get<{ value: string }>("apiKey");
       const model = await store.get<{ value: string }>("model");
+      const storedSys = await store.get<{ value: string }>("systemPrompt");
+      const storedUser = await store.get<{ value: string }>("userPrompt");
 
       const imgData = croppedImage || fullImage;
 
-      const body = {
-        model: model?.value || "gpt-4o",
-        messages: [
-          {
-            role: "user",
-            content: [
-              { type: "text", text: prompt },
-              { type: "image_url", image_url: { url: imgData } }
-            ]
-          }
-        ]
-      };
+      let endpointValue = endpoint?.value || "https://api.openai.com/v1/chat/completions";
+      if (!endpointValue.endsWith("/chat/completions")) {
+        endpointValue = endpointValue.replace(/\/$/, "") + "/chat/completions";
+      }
+      const apiKeyValue = apiKey?.value || "";
+      const modelValue = model?.value || "gpt-4o";
+      const sysPromptVal = storedSys?.value || "";
+      const userPromptTpl = storedUser?.value || "{prompt}";
+      
+      const promptContent = prompt.trim() || " ";
+      const finalPrompt = userPromptTpl.includes("{prompt}") 
+                          ? userPromptTpl.replace("{prompt}", promptContent) 
+                          : `${userPromptTpl}\n\n${promptContent}`;
 
-      const res = await fetch(endpoint?.value || "https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey?.value || ""}`
-        },
-        body: JSON.stringify(body)
+      const response = await invoke<string>("ask_ai", {
+        endpoint: endpointValue,
+        apiKey: apiKeyValue,
+        model: modelValue,
+        systemPrompt: sysPromptVal,
+        prompt: finalPrompt,
+        imageData: imgData
       });
 
-      if (!res.ok) {
-        throw new Error(`API Error: ${res.status} ${res.statusText}`);
-      }
-
-      const data = await res.json();
-      setResult(data.choices?.[0]?.message?.content || "No response");
+      setResult(response);
     } catch (err: any) {
-      setError(err.message);
+      setError(err.toString());
     } finally {
       setLoading(false);
     }
@@ -158,6 +180,7 @@ export default function Prompt() {
     setHasCropped(false);
     setCroppedImage(null);
     setResult(null);
+    setChatPos(null);
   };
   
   if (!fullImage) return null;
@@ -166,6 +189,11 @@ export default function Prompt() {
   const rectY = Math.min(startY, currentY);
   const rectW = Math.abs(currentX - startX);
   const rectH = Math.abs(currentY - startY);
+
+  const defaultChatX = Math.min((rectW > 0 ? rectX + rectW : 0) + 20, window.innerWidth - 420);
+  const defaultChatY = Math.max(20, Math.min(rectH > 0 ? rectY : 0, window.innerHeight - 400));
+  const currentChatX = chatPos ? chatPos.x : defaultChatX;
+  const currentChatY = chatPos ? chatPos.y : defaultChatY;
 
   return (
     <div className="fixed inset-0 select-none overflow-hidden font-sans" onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}>
@@ -214,7 +242,7 @@ export default function Prompt() {
 
       {/* Close button */}
       <button 
-        onClick={() => getCurrentWindow().hide()}
+        onClick={() => invoke("hide_prompt").catch(console.error)}
         className="absolute top-4 right-4 bg-black/50 hover:bg-red-500 text-white p-2 rounded-full transition-colors z-50 cursor-pointer"
       >
         <X className="w-5 h-5" />
@@ -225,12 +253,28 @@ export default function Prompt() {
         <div 
           className="absolute z-50 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl flex flex-col w-[400px] overflow-hidden"
           style={{
-             left: Math.min(rectX + rectW + 20, window.innerWidth - 420),
-             top: Math.max(20, Math.min(rectY, window.innerHeight - 400)),
+             left: currentChatX,
+             top: currentChatY,
              maxHeight: window.innerHeight - 40,
           }}
           onMouseDown={(e) => e.stopPropagation()} // Prevent resetting selection when interacting with UI
         >
+          {/* Drag Handle */}
+          <div 
+             className="h-6 bg-zinc-800/50 flex items-center justify-center cursor-grab active:cursor-grabbing hover:bg-zinc-800 transition-colors shrink-0"
+             onMouseDown={(e) => {
+               e.stopPropagation();
+               setIsDraggingChat(true);
+               const rect = e.currentTarget.parentElement!.getBoundingClientRect();
+               setDragOffset({
+                 x: e.clientX - rect.left,
+                 y: e.clientY - rect.top
+               });
+             }}
+          >
+             <div className="w-12 h-1.5 bg-zinc-600/50 rounded-full" />
+          </div>
+
           {/* Result Area */}
           {(result || error || loading) && (
             <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-zinc-900/50 min-h-[100px] max-h-[400px]">
@@ -244,8 +288,10 @@ export default function Prompt() {
                   {error}
                 </div>
               ) : (
-                <div className="prose prose-invert max-w-none text-zinc-300 text-sm leading-relaxed whitespace-pre-wrap select-text">
-                  {result}
+                <div className="prose prose-sm prose-invert max-w-none text-zinc-300 leading-relaxed overflow-hidden">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {result || ""}
+                  </ReactMarkdown>
                 </div>
               )}
             </div>
@@ -271,7 +317,7 @@ export default function Prompt() {
               />
               <button
                 type="submit"
-                disabled={!prompt.trim() || loading}
+                disabled={(!croppedImage && !fullImage) || loading}
                 className="p-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl transition-colors shrink-0"
               >
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}

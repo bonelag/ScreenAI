@@ -8,7 +8,27 @@ export default function App() {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gpt-4o");
   const [shortcutText, setShortcutText] = useState("CommandOrControl+Shift+0");
+  const [systemPrompt, setSystemPrompt] = useState("");
+  const [userPrompt, setUserPrompt] = useState("");
   const [isSaved, setIsSaved] = useState(false);
+
+  const handleShortcutKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    const keys: string[] = [];
+    
+    // Thu thập các phím modifier
+    if (e.ctrlKey) keys.push("Ctrl");
+    if (e.altKey) keys.push("Alt");
+    if (e.shiftKey) keys.push("Shift");
+    if (e.metaKey) keys.push("Super");
+    
+    // Loại trừ nếu chỉ nhấn các phím modifier
+    if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
+    
+    // Sử dụng e.code (chuẩn W3C KeyboardEvent: KeyW, Digit0, Space) đúng với format Tauri Plugin yêu cầu thay vì ký tự đơn
+    keys.push(e.code);
+    setShortcutText(keys.join("+"));
+  };
 
   useEffect(() => {
     // Load existing settings
@@ -25,6 +45,12 @@ export default function App() {
 
       const storedShortcut = await store.get<{ value: string }>("shortcutText");
       if (storedShortcut?.value) setShortcutText(storedShortcut.value);
+
+      const storedSys = await store.get<{ value: string }>("systemPrompt");
+      if (storedSys?.value) setSystemPrompt(storedSys.value);
+
+      const storedUser = await store.get<{ value: string }>("userPrompt");
+      if (storedUser?.value) setUserPrompt(storedUser.value);
     }
     loadSettings();
   }, []);
@@ -35,17 +61,19 @@ export default function App() {
     await store.set("apiKey", { value: apiKey });
     await store.set("model", { value: model });
     await store.set("shortcutText", { value: shortcutText });
+    await store.set("systemPrompt", { value: systemPrompt });
+    await store.set("userPrompt", { value: userPrompt });
     await store.save();
 
     // Call rust command to re-register shortcut if changed
     try {
       await invoke("register_shortcut", { shortcut: shortcutText });
-    } catch (e) {
+      setIsSaved(true);
+      setTimeout(() => setIsSaved(false), 2000);
+    } catch (e: any) {
       console.error(e);
+      alert("Lỗi khi đăng ký phím tắt: " + e);
     }
-
-    setIsSaved(true);
-    setTimeout(() => setIsSaved(false), 2000);
   };
 
   return (
@@ -115,10 +143,37 @@ export default function App() {
               </label>
               <input 
                 type="text" 
-                value={shortcutText}
-                onChange={(e) => setShortcutText(e.target.value)}
-                className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all font-mono text-sm"
-                placeholder="CommandOrControl+Shift+0"
+                value={shortcutText.replace(/Key([A-Z])/g, '$1').replace(/Digit([0-9])/g, '$1')}
+                readOnly
+                onKeyDown={handleShortcutKeyDown}
+                className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all font-mono text-sm cursor-pointer"
+                placeholder="Ấn tổ hợp phím tại đây..."
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-zinc-800/50">
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-sm font-medium text-zinc-300">
+                System Prompt (Định hướng)
+              </label>
+              <textarea 
+                value={systemPrompt}
+                onChange={(e) => setSystemPrompt(e.target.value)}
+                className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all font-sans text-sm h-28 resize-none custom-scrollbar"
+                placeholder="Mặc định: Bạn là trợ lý AI hữu ích..."
+              />
+            </div>
+            
+            <div className="space-y-2">
+              <label className="flex items-center gap-2 text-sm font-medium text-zinc-300">
+                User Prompt Template (Bổ sung)
+              </label>
+              <textarea 
+                value={userPrompt}
+                onChange={(e) => setUserPrompt(e.target.value)}
+                className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all font-sans text-sm h-28 resize-none custom-scrollbar"
+                placeholder="Ví dụ: Phân tích ảnh này. Dùng biến {prompt}"
               />
             </div>
           </div>
