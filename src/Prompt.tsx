@@ -158,7 +158,14 @@ export default function Prompt() {
       }
       const apiKeyValue = apiKey?.value || "";
       const modelValue = model?.value || "gpt-4o";
-      const sysPromptVal = storedSys?.value || "";
+
+      const enableThinkingState = storedThink !== null && storedThink !== undefined ? storedThink.value : true;
+      let sysPromptVal = storedSys?.value || "";
+      
+      if (!enableThinkingState) {
+        sysPromptVal += "\n\nCRITICAL INSTRUCTION: You MUST answer directly and IMMEDIATELY. DO NOT use <think> tags. DO NOT output any reasoning or thought process. Give the final answer outright.";
+      }
+      
       const userPromptTpl = storedUser?.value || "{prompt}";
       
       const promptContent = prompt.trim() || " ";
@@ -195,7 +202,6 @@ export default function Prompt() {
       });
 
       let finalResponse = response;
-      const enableThinkingState = storedThink !== null && storedThink !== undefined ? storedThink.value : true;
 
       if (!enableThinkingState) {
         // Strip out the thinking section entirely

@@ -190,7 +190,7 @@ export default function App() {
                   onChange={(e) => setEnableThinking(e.target.checked)}
                   className="w-4 h-4 cursor-pointer accent-blue-500"
                 />
-                Bật hiện Thinking Mode trong cuộc trò chuyện (Với các model có tag &lt;think&gt;)
+                Cho phép AI tư duy ngầm (Thinking) - Bỏ tích để ép AI trả lời ngay lập tức
               </label>
             </div>
           </div>
