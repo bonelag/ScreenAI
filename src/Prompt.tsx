@@ -1,0 +1,285 @@
+import { useState, useEffect, useRef } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { load } from "@tauri-apps/plugin-store";
+import { Send, Loader2, X, Maximize } from "lucide-react";
+import { getCurrentWindow } from '@tauri-apps/api/window';
+
+export default function Prompt() {
+  const [fullImage, setFullImage] = useState<string | null>(null);
+  const [croppedImage, setCroppedImage] = useState<string | null>(null);
+  
+  const [startX, setStartX] = useState(0);
+  const [startY, setStartY] = useState(0);
+  const [currentX, setCurrentX] = useState(0);
+  const [currentY, setCurrentY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [hasCropped, setHasCropped] = useState(false);
+  
+  const [prompt, setPrompt] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  useEffect(() => {
+    async function init() {
+      try {
+        const base64Img = await invoke<string>("get_last_screenshot");
+        setFullImage(base64Img);
+      } catch (err) {
+        console.error("Failed to get screenshot:", err);
+      }
+    }
+    init();
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        getCurrentWindow().hide();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (hasCropped || result || loading) return;
+    setStartX(e.clientX);
+    setStartY(e.clientY);
+    setCurrentX(e.clientX);
+    setCurrentY(e.clientY);
+    setIsDragging(true);
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!isDragging || hasCropped) return;
+    setCurrentX(e.clientX);
+    setCurrentY(e.clientY);
+  };
+
+  const handleMouseUp = () => {
+    if (!isDragging || hasCropped) return;
+    setIsDragging(false);
+    
+    const width = Math.abs(currentX - startX);
+    const height = Math.abs(currentY - startY);
+    
+    if (width > 20 && height > 20) {
+      cropImage();
+      setHasCropped(true);
+    } else {
+      setHasCropped(false);
+    }
+  };
+
+  const cropImage = () => {
+    if (!canvasRef.current || !imgRef.current) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const x = Math.min(startX, currentX);
+    const y = Math.min(startY, currentY);
+    const width = Math.abs(currentX - startX);
+    const height = Math.abs(currentY - startY);
+
+    canvas.width = width;
+    canvas.height = height;
+
+    // Draw full image scaled exactly to window sizes (object-cover / object-fill context)
+    // Since fullImage is taken from screen, we map strictly using window dimensions.
+    const winWidth = window.innerWidth;
+    const winHeight = window.innerHeight;
+
+    // We assume the image is same aspect ratio as screen
+    ctx.drawImage(imgRef.current, 
+      (x / winWidth) * imgRef.current.naturalWidth, 
+      (y / winHeight) * imgRef.current.naturalHeight, 
+      (width / winWidth) * imgRef.current.naturalWidth, 
+      (height / winHeight) * imgRef.current.naturalHeight, 
+      0, 0, width, height);
+
+    setCroppedImage(canvas.toDataURL("image/jpeg", 0.9));
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!prompt.trim() || (!croppedImage && !fullImage) || loading) return;
+
+    setLoading(true);
+    setResult(null);
+    setError(null);
+
+    try {
+      const store = await load("settings.json");
+      const endpoint = await store.get<{ value: string }>("endpoint");
+      const apiKey = await store.get<{ value: string }>("apiKey");
+      const model = await store.get<{ value: string }>("model");
+
+      const imgData = croppedImage || fullImage;
+
+      const body = {
+        model: model?.value || "gpt-4o",
+        messages: [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: prompt },
+              { type: "image_url", image_url: { url: imgData } }
+            ]
+          }
+        ]
+      };
+
+      const res = await fetch(endpoint?.value || "https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey?.value || ""}`
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!res.ok) {
+        throw new Error(`API Error: ${res.status} ${res.statusText}`);
+      }
+
+      const data = await res.json();
+      setResult(data.choices?.[0]?.message?.content || "No response");
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const resetSelection = () => {
+    setHasCropped(false);
+    setCroppedImage(null);
+    setResult(null);
+  };
+  
+  if (!fullImage) return null;
+
+  const rectX = Math.min(startX, currentX);
+  const rectY = Math.min(startY, currentY);
+  const rectW = Math.abs(currentX - startX);
+  const rectH = Math.abs(currentY - startY);
+
+  return (
+    <div className="fixed inset-0 select-none overflow-hidden font-sans" onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}>
+      {/* Background Image */}
+      <img ref={imgRef} src={fullImage} className="absolute inset-0 w-full h-full object-fill pointer-events-none" />
+      
+      {/* Dark overlay when cropping */}
+      {(!hasCropped && (!result)) && (
+        <div className="absolute inset-0 bg-black/40 cursor-crosshair" />
+      )}
+      {hasCropped && !result && (
+        <div className="absolute inset-0 bg-black/70 transition-colors duration-300" />
+      )}
+
+      {/* Selection Box */}
+      {(isDragging || hasCropped) && rectW > 0 && rectH > 0 && (
+        <div 
+          className="absolute border-2 border-blue-500 shadow-[0_0_0_9999px_rgba(0,0,0,0.5)] overflow-hidden" 
+          style={{
+            left: rectX, top: rectY, width: rectW, height: rectH,
+            boxShadow: hasCropped ? 'none' : '0 0 0 9999px rgba(0,0,0,0.5)'
+          }}
+        >
+          {/* Show the clear part of the image inside the selection box if we are selecting */}
+          {!hasCropped && (
+             <img src={fullImage} 
+                  className="absolute max-w-none pointer-events-none" 
+                  style={{ width: window.innerWidth, height: window.innerHeight, left: -rectX, top: -rectY }} 
+             />
+          )}
+          {hasCropped && croppedImage && (
+             <img src={croppedImage} className="w-full h-full object-fill pointer-events-none" />
+          )}
+        </div>
+      )}
+
+      {/* Hidden Canvas for cropping */}
+      <canvas ref={canvasRef} className="hidden" />
+
+      {/* Instructions */}
+      {!hasCropped && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/70 text-white px-4 py-2 rounded-full backdrop-blur text-sm pointer-events-none animate-pulse">
+          Kéo thả để chọn vùng màn hình. (Esc để thoát)
+        </div>
+      )}
+
+      {/* Close button */}
+      <button 
+        onClick={() => getCurrentWindow().hide()}
+        className="absolute top-4 right-4 bg-black/50 hover:bg-red-500 text-white p-2 rounded-full transition-colors z-50 cursor-pointer"
+      >
+        <X className="w-5 h-5" />
+      </button>
+
+      {/* Chat UI when cropped */}
+      {(hasCropped || result) && (
+        <div 
+          className="absolute z-50 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl flex flex-col w-[400px] overflow-hidden"
+          style={{
+             left: Math.min(rectX + rectW + 20, window.innerWidth - 420),
+             top: Math.max(20, Math.min(rectY, window.innerHeight - 400)),
+             maxHeight: window.innerHeight - 40,
+          }}
+          onMouseDown={(e) => e.stopPropagation()} // Prevent resetting selection when interacting with UI
+        >
+          {/* Result Area */}
+          {(result || error || loading) && (
+            <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-zinc-900/50 min-h-[100px] max-h-[400px]">
+              {loading ? (
+                <div className="flex items-center gap-2 text-zinc-400 justify-center h-full float-animation">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span className="text-sm">Đang suy nghĩ...</span>
+                </div>
+              ) : error ? (
+                <div className="p-3 bg-red-500/10 text-red-400 rounded-xl border border-red-500/20 text-sm">
+                  {error}
+                </div>
+              ) : (
+                <div className="prose prose-invert max-w-none text-zinc-300 text-sm leading-relaxed whitespace-pre-wrap select-text">
+                  {result}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Input Area */}
+          <form onSubmit={handleSubmit} className="p-2 bg-zinc-900 border-t border-zinc-800 shrink-0">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={resetSelection}
+                className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-xl transition-colors shrink-0"
+                title="Chọn lại"
+              >
+                <Maximize className="w-4 h-4" />
+              </button>
+              <input
+                autoFocus
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder="Hỏi về vùng này..."
+                className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500/50 transition-all"
+              />
+              <button
+                type="submit"
+                disabled={!prompt.trim() || loading}
+                className="p-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl transition-colors shrink-0"
+              >
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
