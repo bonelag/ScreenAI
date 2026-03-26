@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
 import Prompt from "./Prompt";
+import ChatWindow from "./ChatWindow";
 import "./index.css";
 
 function Root() {
@@ -13,7 +14,9 @@ function Root() {
     return () => window.removeEventListener("hashchange", handleHashChange);
   }, []);
 
-  return hash === "#/prompt" ? <Prompt /> : <App />;
+  if (hash === "#/prompt") return <Prompt />;
+  if (hash === "#/chat") return <ChatWindow />;
+  return <App />;
 }
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

@@ -1,7 +1,7 @@
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
 use tauri::menu::{Menu, MenuItem};
-use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState, GlobalShortcutExt};
+use tauri_plugin_global_shortcut::{Shortcut, ShortcutState, GlobalShortcutExt};
 use xcap::Monitor;
 use base64::Engine as _;
 use std::io::Cursor;
@@ -11,6 +11,8 @@ use tauri_plugin_store::StoreExt;
 
 struct AppState {
     last_screenshot: Mutex<Option<String>>,
+    capture_shortcut: Mutex<String>,
+    chat_shortcut: Mutex<String>,
 }
 
 #[tauri::command]
@@ -24,22 +26,38 @@ fn get_last_screenshot(state: tauri::State<AppState>) -> Result<String, String> 
 }
 
 #[tauri::command]
-fn register_shortcut(app: AppHandle, shortcut: String) -> Result<(), String> {
+fn register_shortcuts(app: AppHandle, capture_shortcut: String, chat_shortcut: String) -> Result<(), String> {
     let _ = app.global_shortcut().unregister_all();
     
-    if let Ok(parsed_shortcut) = Shortcut::from_str(&shortcut) {
-        if let Err(e) = app.global_shortcut().register(parsed_shortcut) {
-            return Err(format!("Failed to register shortcut: {}", e));
+    let state: tauri::State<AppState> = app.state();
+    *state.capture_shortcut.lock().unwrap() = capture_shortcut.clone();
+    *state.chat_shortcut.lock().unwrap() = chat_shortcut.clone();
+
+    if let Ok(parsed) = Shortcut::from_str(&capture_shortcut) {
+        if let Err(e) = app.global_shortcut().register(parsed) {
+            return Err(format!("Failed to register capture shortcut: {}", e));
         }
-        Ok(())
     } else {
-        Err(format!("Invalid shortcut format: {}", shortcut))
+        return Err(format!("Invalid capture shortcut format: {}", capture_shortcut));
     }
+
+    if let Ok(parsed) = Shortcut::from_str(&chat_shortcut) {
+        if let Err(e) = app.global_shortcut().register(parsed) {
+            return Err(format!("Failed to register chat shortcut: {}", e));
+        }
+    } else {
+        return Err(format!("Invalid chat shortcut format: {}", chat_shortcut));
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
 fn hide_prompt(app: AppHandle) {
     if let Some(win) = app.get_webview_window("prompt") {
+        let _ = win.hide();
+    }
+    if let Some(win) = app.get_webview_window("chat") {
         let _ = win.hide();
     }
 }
@@ -51,6 +69,30 @@ fn resize_prompt_window(app: AppHandle, x: f64, y: f64, width: f64, height: f64)
         let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
         let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
         let _ = win.set_skip_taskbar(true);
+    }
+}
+
+#[tauri::command]
+fn resize_chat_window(app: AppHandle, x: f64, y: f64, width: f64, height: f64) {
+    if let Some(win) = app.get_webview_window("chat") {
+        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
+        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+    }
+}
+
+#[tauri::command]
+fn adjust_chat_window_size(app: AppHandle, width: f64, height: f64) {
+    if let Some(win) = app.get_webview_window("chat") {
+        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
+        if let Ok(monitor) = win.current_monitor() {
+            if let Some(m) = monitor {
+                let screen_w = m.size().width as f64 / m.scale_factor();
+                let screen_h = m.size().height as f64 / m.scale_factor();
+                let x = (screen_w - width) / 2.0;
+                let y = screen_h - height - 160.0; // 160px from bottom for better view
+                let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+            }
+        }
     }
 }
 
@@ -112,7 +154,6 @@ fn show_main_window(app: &AppHandle) {
 fn capture_and_show_prompt(app: AppHandle) {
     let app_handle = app.clone();
     
-    // Run in a new thread so we don't block the UI thread
     std::thread::spawn(move || {
         let screens = match Monitor::all() {
             Ok(s) => s,
@@ -131,7 +172,6 @@ fn capture_and_show_prompt(app: AppHandle) {
                 }
             };
             
-            // Convert Rgba8 to Rgb8 since JPEG does not support Alpha channel
             let rgb_image = image::DynamicImage::ImageRgba8(image).into_rgb8();
             
             let mut buffer = Cursor::new(Vec::new());
@@ -146,7 +186,6 @@ fn capture_and_show_prompt(app: AppHandle) {
             let state: tauri::State<AppState> = app_handle.state();
             *state.last_screenshot.lock().unwrap() = Some(data_uri);
             
-            // Re-open or show the prompt window
             let prompt_window = app_handle.get_webview_window("prompt");
             if let Some(win) = prompt_window {
                 let _ = win.eval("window.location.reload()");
@@ -173,12 +212,62 @@ fn capture_and_show_prompt(app: AppHandle) {
     });
 }
 
+fn open_chat_window(app: AppHandle) {
+    // Compact size: just the input bar
+    let compact_width = 500.0;
+    let compact_height = 110.0;
+    
+    let chat_window = app.get_webview_window("chat");
+    if let Some(win) = chat_window {
+        let _ = win.eval("window.location.reload()");
+        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width: compact_width, height: compact_height }));
+        // Re-center near bottom
+        if let Ok(monitor) = win.current_monitor() {
+            if let Some(m) = monitor {
+                let screen_w = m.size().width as f64 / m.scale_factor();
+                let screen_h = m.size().height as f64 / m.scale_factor();
+                let x = (screen_w - compact_width) / 2.0;
+                let y = screen_h - compact_height - 160.0;
+                let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+            }
+        }
+        let _ = win.show();
+        let _ = win.set_focus();
+    } else {
+        // Get primary monitor size for positioning
+        let monitors = xcap::Monitor::all().unwrap_or_default();
+        let (screen_w, screen_h) = monitors.first()
+            .map(|m| (m.width().unwrap_or(1920) as f64, m.height().unwrap_or(1080) as f64))
+            .unwrap_or((1920.0, 1080.0));
+        
+        // Cần lấy scale_factor chuẩn nếu có thể, nhưng fallback tạm
+        let x = (screen_w - compact_width) / 2.0;
+        let y = screen_h - compact_height - 160.0;
+        
+        let win = WebviewWindowBuilder::new(
+            &app,
+            "chat",
+            WebviewUrl::App("/#/chat".into())
+        )
+        .title("ScreenAI Chat")
+        .inner_size(compact_width, compact_height)
+        .position(x, y)
+        .always_on_top(true)
+        .decorations(false)
+        .transparent(false)
+        .skip_taskbar(true)
+        .build();
+        let _ = win;
+    }
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open_item = MenuItem::with_id(app, "open_settings", "Open Settings", true, None::<&str>)?;
     let capture_item = MenuItem::with_id(app, "capture_now", "Capture Now", true, None::<&str>)?;
+    let chat_item = MenuItem::with_id(app, "open_chat", "Open Chat", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     
-    let menu = Menu::with_items(app, &[&open_item, &capture_item, &quit_item])?;
+    let menu = Menu::with_items(app, &[&open_item, &capture_item, &chat_item, &quit_item])?;
 
     let _tray = TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
@@ -190,6 +279,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 }
                 "capture_now" => {
                     capture_and_show_prompt(app.clone());
+                }
+                "open_chat" => {
+                    open_chat_window(app.clone());
                 }
                 "quit" => {
                     app.exit(0);
@@ -209,46 +301,81 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn is_shortcut_match(shortcut: &Shortcut, shortcut_str: &str) -> bool {
+    if let Ok(parsed) = Shortcut::from_str(shortcut_str) {
+        shortcut.mods == parsed.mods && shortcut.key == parsed.key
+    } else {
+        false
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             last_screenshot: Mutex::new(None),
+            capture_shortcut: Mutex::new("Ctrl+Shift+KeyO".to_string()),
+            chat_shortcut: Mutex::new("Ctrl+Shift+KeyI".to_string()),
         })
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, _shortcut, event| {
+                .with_handler(move |app, shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
-                        capture_and_show_prompt(app.clone());
+                        let state: tauri::State<AppState> = app.state();
+                        let capture_sc = state.capture_shortcut.lock().unwrap().clone();
+                        let chat_sc = state.chat_shortcut.lock().unwrap().clone();
+                        
+                        if is_shortcut_match(shortcut, &capture_sc) {
+                            capture_and_show_prompt(app.clone());
+                        } else if is_shortcut_match(shortcut, &chat_sc) {
+                            open_chat_window(app.clone());
+                        }
                     }
                 })
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcut, hide_prompt, resize_prompt_window, ask_ai])
+        .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcuts, hide_prompt, resize_prompt_window, resize_chat_window, adjust_chat_window_size, ask_ai])
         .setup(move |app| {
-            // Setup tray icon
             setup_tray(app)?;
 
-            // Register global shortcut
-            let default_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
-            let mut shortcut = default_shortcut;
+            let default_capture = "Ctrl+Shift+KeyO".to_string();
+            let default_chat = "Ctrl+Shift+KeyI".to_string();
+            let mut capture_sc = default_capture.clone();
+            let mut chat_sc = default_chat.clone();
             
             if let Ok(store) = app.store("settings.json") {
                 if let Some(val) = store.get("shortcutText") {
                     if let Some(s) = val.get("value").and_then(|v| v.as_str()) {
-                        if let Ok(parsed) = Shortcut::from_str(s) {
-                            shortcut = parsed;
-                        }
+                        capture_sc = s.to_string();
+                    }
+                }
+                if let Some(val) = store.get("chatShortcutText") {
+                    if let Some(s) = val.get("value").and_then(|v| v.as_str()) {
+                        chat_sc = s.to_string();
                     }
                 }
             }
-            let _ = app.global_shortcut().register(shortcut);
+
+            // Save to state
+            {
+                let state: tauri::State<AppState> = app.state();
+                *state.capture_shortcut.lock().unwrap() = capture_sc.clone();
+                *state.chat_shortcut.lock().unwrap() = chat_sc.clone();
+            }
+
+            // Register both shortcuts
+            if let Ok(parsed) = Shortcut::from_str(&capture_sc) {
+                let _ = app.global_shortcut().register(parsed);
+            }
+            if let Ok(parsed) = Shortcut::from_str(&chat_sc) {
+                let _ = app.global_shortcut().register(parsed);
+            }
+
             Ok(())
         })
         .on_window_event(|window, event| {
-            // Intercept close on main window -> hide to tray instead
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();

@@ -1,38 +1,37 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
-import { Settings, Key, Link2, Monitor, Cpu, CheckCircle } from "lucide-react";
+import { Settings, Key, Link2, Monitor, Cpu, CheckCircle, MessageSquare } from "lucide-react";
 
 export default function App() {
   const [endpoint, setEndpoint] = useState("https://api.openai.com/v1/chat/completions");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("gpt-4o");
-  const [shortcutText, setShortcutText] = useState("CommandOrControl+Shift+0");
+  const [shortcutText, setShortcutText] = useState("Ctrl+Shift+KeyO");
+  const [chatShortcutText, setChatShortcutText] = useState("Ctrl+Shift+KeyI");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [userPrompt, setUserPrompt] = useState("");
   const [enableThinking, setEnableThinking] = useState(true);
   const [isSaved, setIsSaved] = useState(false);
 
-  const handleShortcutKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+  const handleShortcutKeyDown = (setter: (val: string) => void) => (e: React.KeyboardEvent<HTMLInputElement>) => {
     e.preventDefault();
     const keys: string[] = [];
     
-    // Thu thập các phím modifier
     if (e.ctrlKey) keys.push("Ctrl");
     if (e.altKey) keys.push("Alt");
     if (e.shiftKey) keys.push("Shift");
     if (e.metaKey) keys.push("Super");
     
-    // Loại trừ nếu chỉ nhấn các phím modifier
     if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) return;
     
-    // Sử dụng e.code (chuẩn W3C KeyboardEvent: KeyW, Digit0, Space) đúng với format Tauri Plugin yêu cầu thay vì ký tự đơn
     keys.push(e.code);
-    setShortcutText(keys.join("+"));
+    setter(keys.join("+"));
   };
 
+  const formatShortcut = (s: string) => s.replace(/Key([A-Z])/g, '$1').replace(/Digit([0-9])/g, '$1');
+
   useEffect(() => {
-    // Load existing settings
     async function loadSettings() {
       const store = await load("settings.json");
       const storedEndpoint = await store.get<{ value: string }>("endpoint");
@@ -46,6 +45,9 @@ export default function App() {
 
       const storedShortcut = await store.get<{ value: string }>("shortcutText");
       if (storedShortcut?.value) setShortcutText(storedShortcut.value);
+
+      const storedChatShortcut = await store.get<{ value: string }>("chatShortcutText");
+      if (storedChatShortcut?.value) setChatShortcutText(storedChatShortcut.value);
 
       const storedSys = await store.get<{ value: string }>("systemPrompt");
       if (storedSys?.value) setSystemPrompt(storedSys.value);
@@ -65,14 +67,17 @@ export default function App() {
     await store.set("apiKey", { value: apiKey });
     await store.set("model", { value: model });
     await store.set("shortcutText", { value: shortcutText });
+    await store.set("chatShortcutText", { value: chatShortcutText });
     await store.set("systemPrompt", { value: systemPrompt });
     await store.set("userPrompt", { value: userPrompt });
     await store.set("enableThinking", { value: enableThinking });
     await store.save();
 
-    // Call rust command to re-register shortcut if changed
     try {
-      await invoke("register_shortcut", { shortcut: shortcutText });
+      await invoke("register_shortcuts", { 
+        captureShortcut: shortcutText,
+        chatShortcut: chatShortcutText 
+      });
       setIsSaved(true);
       setTimeout(() => setIsSaved(false), 2000);
     } catch (e: any) {
@@ -126,33 +131,48 @@ export default function App() {
             />
           </div>
 
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm font-medium text-zinc-300">
+              <Cpu className="w-4 h-4 text-zinc-500" />
+              Model Text/Vision
+            </label>
+            <input 
+              type="text" 
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all font-mono text-sm"
+              placeholder="gpt-4o"
+            />
+          </div>
+
           <div className="grid grid-cols-2 gap-6">
             <div className="space-y-2">
               <label className="flex items-center gap-2 text-sm font-medium text-zinc-300">
-                <Cpu className="w-4 h-4 text-zinc-500" />
-                Model Text/Vision
+                <Settings className="w-4 h-4 text-zinc-500" />
+                Phím tắt chụp
               </label>
               <input 
                 type="text" 
-                value={model}
-                onChange={(e) => setModel(e.target.value)}
-                className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all font-mono text-sm"
-                placeholder="gpt-4o"
+                value={formatShortcut(shortcutText)}
+                readOnly
+                onKeyDown={handleShortcutKeyDown(setShortcutText)}
+                className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all font-mono text-sm cursor-pointer"
+                placeholder="Ấn tổ hợp phím..."
               />
             </div>
             
             <div className="space-y-2">
               <label className="flex items-center gap-2 text-sm font-medium text-zinc-300">
-                <Settings className="w-4 h-4 text-zinc-500" />
-                Phím tắt chụp (Global)
+                <MessageSquare className="w-4 h-4 text-zinc-500" />
+                Phím tắt chat
               </label>
               <input 
                 type="text" 
-                value={shortcutText.replace(/Key([A-Z])/g, '$1').replace(/Digit([0-9])/g, '$1')}
+                value={formatShortcut(chatShortcutText)}
                 readOnly
-                onKeyDown={handleShortcutKeyDown}
+                onKeyDown={handleShortcutKeyDown(setChatShortcutText)}
                 className="w-full bg-zinc-950/50 border border-zinc-800 rounded-xl px-4 py-3 text-zinc-200 outline-none focus:border-blue-500/50 focus:ring-1 focus:ring-blue-500/50 transition-all font-mono text-sm cursor-pointer"
-                placeholder="Ấn tổ hợp phím tại đây..."
+                placeholder="Ấn tổ hợp phím..."
               />
             </div>
           </div>
