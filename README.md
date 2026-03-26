@@ -70,13 +70,12 @@ npm run tauri build
 
 ---
 
-## 📸 Giao diện ứng dụng
+## ✅ Lộ Trình Cập Nhật
 
-*(Bạn có thể upload ảnh minh họa vào thư mục docs và dán URL vào đây)*
-
-- **Cài đặt hệ thống (Main Window)**: Hình 1
-- **Crosshair chụp màn hình (Fullscreen Overlay)**: Hình 2
-- **Floating Chatbox (Compact & Expanded)**: Hình 3
+- [ ] Phát triển tính năng LIVE AI realtime
+- [ ] Hỗ trợ thêm nhiều tùy chỉnh AI
+- [ ] Nâng cấp giao diện
+- [ ] Tích hợp thêm nhiều tính năng
 
 ---
 
