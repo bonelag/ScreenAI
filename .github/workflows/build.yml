@@ -26,13 +26,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Build Tauri App and Upload to Release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build Tauri App
+        run: npm run tauri build
+
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
         with:
-          tagName: ${{ github.ref_name }} # Tự lấy tag khi release 
-          releaseName: 'ScreenAI v__VERSION__'
-          releaseBody: 'Phiên bản cài đặt ScreenAI dành cho Windows. Tải file .exe bên dưới để sử dụng.'
-          releaseDraft: false
-          prerelease: false
+          name: 'ScreenAI ${{ github.ref_name }}'
+          body: 'Phiên bản cài đặt ScreenAI dành cho Windows. Tải tệp .exe bên dưới để sử dụng trực tiếp.'
+          files: src-tauri/target/release/ScreenAI.exe
