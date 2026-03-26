@@ -1,4 +1,6 @@
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent};
+use tauri::menu::{Menu, MenuItem};
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState, GlobalShortcutExt};
 use xcap::Monitor;
 use base64::Engine as _;
@@ -48,6 +50,7 @@ fn resize_prompt_window(app: AppHandle, x: f64, y: f64, width: f64, height: f64)
         let _ = win.set_fullscreen(false);
         let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
         let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
+        let _ = win.set_skip_taskbar(true);
     }
 }
 
@@ -99,6 +102,13 @@ async fn ask_ai(endpoint: String, api_key: String, model: String, messages: serd
     }
 }
 
+fn show_main_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
+}
+
 fn capture_and_show_prompt(app: AppHandle) {
     let app_handle = app.clone();
     
@@ -143,8 +153,9 @@ fn capture_and_show_prompt(app: AppHandle) {
                 let _ = win.show();
                 let _ = win.set_focus();
                 let _ = win.set_fullscreen(true);
+                let _ = win.set_skip_taskbar(true);
             } else {
-                let _win = WebviewWindowBuilder::new(
+                let win = WebviewWindowBuilder::new(
                     &app_handle,
                     "prompt",
                     WebviewUrl::App("/#/prompt".into())
@@ -154,10 +165,48 @@ fn capture_and_show_prompt(app: AppHandle) {
                 .always_on_top(true)
                 .decorations(false)
                 .transparent(true)
+                .skip_taskbar(true)
                 .build();
+                let _ = win;
             }
         }
     });
+}
+
+fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let open_item = MenuItem::with_id(app, "open_settings", "Open Settings", true, None::<&str>)?;
+    let capture_item = MenuItem::with_id(app, "capture_now", "Capture Now", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    
+    let menu = Menu::with_items(app, &[&open_item, &capture_item, &quit_item])?;
+
+    let _tray = TrayIconBuilder::new()
+        .icon(app.default_window_icon().unwrap().clone())
+        .menu(&menu)
+        .on_menu_event(move |app, event| {
+            match event.id.as_ref() {
+                "open_settings" => {
+                    show_main_window(app);
+                }
+                "capture_now" => {
+                    capture_and_show_prompt(app.clone());
+                }
+                "quit" => {
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                let app = tray.app_handle();
+                show_main_window(app);
+            }
+        })
+        .tooltip("ScreenAI")
+        .build(app)?;
+    
+    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -179,6 +228,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcut, hide_prompt, resize_prompt_window, ask_ai])
         .setup(move |app| {
+            // Setup tray icon
+            setup_tray(app)?;
+
+            // Register global shortcut
             let default_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
             let mut shortcut = default_shortcut;
             
@@ -193,6 +246,15 @@ pub fn run() {
             }
             let _ = app.global_shortcut().register(shortcut);
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Intercept close on main window -> hide to tray instead
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
