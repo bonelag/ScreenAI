@@ -21,6 +21,9 @@ export default function Prompt() {
   const [chatHistory, setChatHistory] = useState<{ role: string, content: any }[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const [chatOnlyMode, setChatOnlyMode] = useState(false);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
+
   const [chatPos, setChatPos] = useState<{ x: number, y: number } | null>(null);
   const [isDraggingChat, setIsDraggingChat] = useState(false);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -67,15 +70,19 @@ export default function Prompt() {
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
-        invoke("hide_prompt").catch(console.error);
+        if (previewImage) {
+          setPreviewImage(null);
+        } else {
+          invoke("hide_prompt").catch(console.error);
+        }
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [previewImage]);
 
   const handleMouseDown = (e: React.MouseEvent) => {
-    if (hasCropped || chatHistory.length > 0 || loading) return;
+    if (hasCropped || chatHistory.length > 0 || loading || chatOnlyMode) return;
     setStartX(e.clientX);
     setStartY(e.clientY);
     setCurrentX(e.clientX);
@@ -118,12 +125,9 @@ export default function Prompt() {
     canvas.width = width;
     canvas.height = height;
 
-    // Draw full image scaled exactly to window sizes (object-cover / object-fill context)
-    // Since fullImage is taken from screen, we map strictly using window dimensions.
     const winWidth = window.innerWidth;
     const winHeight = window.innerHeight;
 
-    // We assume the image is same aspect ratio as screen
     ctx.drawImage(imgRef.current, 
       (x / winWidth) * imgRef.current.naturalWidth, 
       (y / winHeight) * imgRef.current.naturalHeight, 
@@ -132,6 +136,28 @@ export default function Prompt() {
       0, 0, width, height);
 
     setCroppedImage(canvas.toDataURL("image/jpeg", 0.9));
+  };
+
+  const transitionToChatOnly = async () => {
+    const chatWidth = 420;
+    const chatHeight = 560;
+    // Center the chat window on screen
+    const screenWidth = window.screen.width;
+    const screenHeight = window.screen.height;
+    const chatX = Math.max(0, Math.round((screenWidth - chatWidth) / 2));
+    const chatY = Math.max(0, Math.round((screenHeight - chatHeight) / 2));
+    
+    try {
+      await invoke("resize_prompt_window", {
+        x: chatX,
+        y: chatY,
+        width: chatWidth,
+        height: chatHeight,
+      });
+      setChatOnlyMode(true);
+    } catch (err) {
+      console.error("Failed to resize window:", err);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -194,6 +220,11 @@ export default function Prompt() {
       setChatHistory(newMessages);
       setPrompt("");
 
+      // Transition to chat-only mode on first send
+      if (!chatOnlyMode) {
+        await transitionToChatOnly();
+      }
+
       const response = await invoke<string>("ask_ai", {
         endpoint: endpointValue,
         apiKey: apiKeyValue,
@@ -204,10 +235,8 @@ export default function Prompt() {
       let finalResponse = response;
 
       if (!enableThinkingState) {
-        // Strip out the thinking section entirely
         finalResponse = finalResponse.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
       } else {
-        // Format the think tags nicely into Markdown quotes
         finalResponse = finalResponse.replace(/<think>([\s\S]*?)<\/think>/gi, (_match: string, p1: string) => {
             return `🤔 **Quá trình suy nghĩ:**\n${p1.trim().split('\n').map((line: string) => `> ${line}`).join('\n')}\n\n---\n\n`;
         });
@@ -227,6 +256,9 @@ export default function Prompt() {
     setChatHistory([]);
     setChatPos(null);
     setPrompt("");
+    setChatOnlyMode(false);
+    // Re-enter fullscreen for new selection
+    invoke("hide_prompt").catch(console.error);
   };
   
   if (!fullImage) return null;
@@ -241,6 +273,123 @@ export default function Prompt() {
   const currentChatX = chatPos ? chatPos.x : defaultChatX;
   const currentChatY = chatPos ? chatPos.y : defaultChatY;
 
+  // ============ CHAT-ONLY MODE ============
+  if (chatOnlyMode) {
+    return (
+      <div className="fixed inset-0 flex flex-col bg-zinc-900 font-sans overflow-hidden rounded-2xl border border-zinc-700/50">
+        {/* Header with drag handle and close button */}
+        <div 
+          className="flex items-center justify-between bg-zinc-800/80 px-3 py-2 shrink-0 cursor-grab active:cursor-grabbing border-b border-zinc-700/50"
+          data-tauri-drag-region
+        >
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-1 bg-zinc-600/50 rounded-full" />
+            <span className="text-xs text-zinc-500 select-none">ScreenAI Chat</span>
+          </div>
+          <button
+            onClick={() => invoke("hide_prompt").catch(console.error)}
+            className="p-1.5 text-zinc-400 hover:text-white hover:bg-red-500/80 rounded-lg transition-all cursor-pointer"
+            title="Đóng"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Chat Messages */}
+        <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-zinc-900/50 space-y-4">
+          {chatHistory.filter(m => m.role !== 'system').map((msg, idx) => (
+            <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`p-3 rounded-2xl max-w-[85%] ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-300'} prose prose-sm prose-invert leading-relaxed overflow-hidden break-words shrink-0`}>
+                {msg.role === 'user' ? (
+                  <div>
+                    <div className="whitespace-pre-wrap">{typeof msg.content === 'string' ? msg.content : msg.content.find((c:any) => c.type === 'text')?.text}</div>
+                    {/* Show cropped image thumbnail in first user message */}
+                    {Array.isArray(msg.content) && msg.content.find((c:any) => c.type === 'image_url') && (
+                      <img
+                        src={msg.content.find((c:any) => c.type === 'image_url')?.image_url?.url}
+                        className="mt-2 rounded-lg max-h-40 w-auto cursor-pointer hover:opacity-80 transition-opacity border border-white/20"
+                        onClick={() => setPreviewImage(msg.content.find((c:any) => c.type === 'image_url')?.image_url?.url)}
+                        alt="Screenshot"
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {msg.content || ""}
+                  </ReactMarkdown>
+                )}
+              </div>
+            </div>
+          ))}
+
+          {loading && (
+            <div className="flex items-center justify-start">
+              <div className="flex items-center gap-2 text-zinc-400 p-3 rounded-2xl bg-zinc-800 float-animation w-auto">
+                <Loader2 className="w-5 h-5 animate-spin" />
+                <span className="text-sm">Đang suy nghĩ...</span>
+              </div>
+            </div>
+          )}
+          {error && (
+            <div className="p-3 bg-red-500/10 text-red-400 rounded-xl border border-red-500/20 text-sm">
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Input Area */}
+        <form onSubmit={handleSubmit} className="p-2 bg-zinc-900 border-t border-zinc-800 shrink-0">
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={resetSelection}
+              className="p-2 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-xl transition-colors shrink-0"
+              title="Chụp mới"
+            >
+              <Maximize className="w-4 h-4" />
+            </button>
+            <input
+              autoFocus
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="Hỏi tiếp..."
+              className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500/50 transition-all"
+            />
+            <button
+              type="submit"
+              disabled={loading || !prompt.trim()}
+              className="p-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl transition-colors shrink-0 cursor-pointer"
+            >
+              {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            </button>
+          </div>
+        </form>
+
+        {/* Image Preview Lightbox */}
+        {previewImage && (
+          <div 
+            className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center cursor-pointer"
+            onClick={() => setPreviewImage(null)}
+          >
+            <button 
+              className="absolute top-3 right-3 p-2 bg-zinc-800/80 text-white hover:bg-red-500 rounded-full transition-colors z-10 cursor-pointer"
+              onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img 
+              src={previewImage} 
+              className="max-w-[95%] max-h-[90%] rounded-lg shadow-2xl object-contain" 
+              onClick={(e) => e.stopPropagation()}
+              alt="Preview"
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ============ FULLSCREEN SELECTION MODE ============
   return (
     <div className="fixed inset-0 select-none overflow-hidden font-sans" onMouseDown={handleMouseDown} onMouseMove={handleMouseMove} onMouseUp={handleMouseUp}>
       {/* Background Image */}
@@ -263,7 +412,6 @@ export default function Prompt() {
             boxShadow: hasCropped ? 'none' : '0 0 0 9999px rgba(0,0,0,0.5)'
           }}
         >
-          {/* Show the clear part of the image inside the selection box if we are selecting */}
           {!hasCropped && (
              <img src={fullImage} 
                   className="absolute max-w-none pointer-events-none" 
@@ -294,8 +442,8 @@ export default function Prompt() {
         <X className="w-5 h-5" />
       </button>
 
-      {/* Chat UI when cropped */}
-      {(hasCropped || chatHistory.length > 0) && (
+      {/* Chat UI when cropped (pre-send, still fullscreen) */}
+      {hasCropped && (
         <div 
           className="absolute z-50 bg-zinc-900 border border-zinc-800 rounded-2xl shadow-2xl flex flex-col w-[400px] overflow-hidden"
           style={{
@@ -303,11 +451,11 @@ export default function Prompt() {
              top: currentChatY,
              maxHeight: window.innerHeight - 40,
           }}
-          onMouseDown={(e) => e.stopPropagation()} // Prevent resetting selection when interacting with UI
+          onMouseDown={(e) => e.stopPropagation()}
         >
-          {/* Drag Handle */}
+          {/* Drag Handle + Close */}
           <div 
-             className="h-6 bg-zinc-800/50 flex items-center justify-center cursor-grab active:cursor-grabbing hover:bg-zinc-800 transition-colors shrink-0"
+             className="h-8 bg-zinc-800/50 flex items-center justify-between px-3 cursor-grab active:cursor-grabbing hover:bg-zinc-800 transition-colors shrink-0"
              onMouseDown={(e) => {
                e.stopPropagation();
                setIsDraggingChat(true);
@@ -319,6 +467,13 @@ export default function Prompt() {
              }}
           >
              <div className="w-12 h-1.5 bg-zinc-600/50 rounded-full" />
+             <button
+               onClick={() => invoke("hide_prompt").catch(console.error)}
+               className="p-1 text-zinc-400 hover:text-white hover:bg-red-500/80 rounded-lg transition-all cursor-pointer"
+               title="Đóng"
+             >
+               <X className="w-3.5 h-3.5" />
+             </button>
           </div>
 
           {/* Result Area */}
@@ -375,12 +530,33 @@ export default function Prompt() {
               <button
                 type="submit"
                 disabled={loading || (chatHistory.length === 0 ? (!croppedImage && !fullImage) : !prompt.trim())}
-                className="p-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl transition-colors shrink-0"
+                className="p-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl transition-colors shrink-0 cursor-pointer"
               >
                 {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {/* Image Preview Lightbox */}
+      {previewImage && (
+        <div 
+          className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center cursor-pointer"
+          onClick={() => setPreviewImage(null)}
+        >
+          <button 
+            className="absolute top-3 right-3 p-2 bg-zinc-800/80 text-white hover:bg-red-500 rounded-full transition-colors z-10 cursor-pointer"
+            onClick={(e) => { e.stopPropagation(); setPreviewImage(null); }}
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <img 
+            src={previewImage} 
+            className="max-w-[95%] max-h-[90%] rounded-lg shadow-2xl object-contain" 
+            onClick={(e) => e.stopPropagation()}
+            alt="Preview"
+          />
         </div>
       )}
     </div>

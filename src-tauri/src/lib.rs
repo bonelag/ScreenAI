@@ -1,7 +1,7 @@
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut, ShortcutState, GlobalShortcutExt};
 use xcap::Monitor;
-use base64::{engine::general_purpose, Engine as _};
+use base64::Engine as _;
 use std::io::Cursor;
 use std::sync::Mutex;
 use std::str::FromStr;
@@ -39,6 +39,15 @@ fn register_shortcut(app: AppHandle, shortcut: String) -> Result<(), String> {
 fn hide_prompt(app: AppHandle) {
     if let Some(win) = app.get_webview_window("prompt") {
         let _ = win.hide();
+    }
+}
+
+#[tauri::command]
+fn resize_prompt_window(app: AppHandle, x: f64, y: f64, width: f64, height: f64) {
+    if let Some(win) = app.get_webview_window("prompt") {
+        let _ = win.set_fullscreen(false);
+        let _ = win.set_size(tauri::Size::Logical(tauri::LogicalSize { width, height }));
+        let _ = win.set_position(tauri::Position::Logical(tauri::LogicalPosition { x, y }));
     }
 }
 
@@ -168,7 +177,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcut, hide_prompt, ask_ai])
+        .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcut, hide_prompt, resize_prompt_window, ask_ai])
         .setup(move |app| {
             let default_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyO);
             let mut shortcut = default_shortcut;
