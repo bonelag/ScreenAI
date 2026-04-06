@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { load } from "@tauri-apps/plugin-store";
 import { Send, Loader2, X, ImagePlus, Trash2, Minus } from "lucide-react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { markdownComponents } from './CodeBlock';
 
 export default function ChatWindow() {
   const [prompt, setPrompt] = useState("");
@@ -13,6 +15,9 @@ export default function ChatWindow() {
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const [attachedImages, setAttachedImages] = useState<string[]>([]);
   const [expanded, setExpanded] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [streamingContent, setStreamingContent] = useState("");
+  const [streamingReasoning, setStreamingReasoning] = useState("");
 
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -148,6 +153,8 @@ export default function ChatWindow() {
       const modelValue = model?.value || "gpt-4o";
 
       const enableThinkingState = storedThink !== null && storedThink !== undefined ? storedThink.value : true;
+      const storedStream = await store.get<{ value: boolean }>("enableStream");
+      const enableStreamState = storedStream !== null && storedStream !== undefined ? storedStream.value : true;
       const sysPromptVal = storedSys?.value || "";
       
       const promptContent = prompt.trim() || " ";
@@ -176,28 +183,83 @@ export default function ChatWindow() {
       setPrompt("");
       setAttachedImages([]);
 
-      const response = await invoke<string>("ask_ai", {
-        endpoint: endpointValue,
-        apiKey: apiKeyValue,
-        model: modelValue,
-        messages: newMessages,
-        enableThinking: enableThinkingState
-      });
-
-      let finalResponse = response;
-
-      if (!enableThinkingState) {
-        finalResponse = finalResponse.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+      if (!enableStreamState) {
+        try {
+          const response = await invoke<string>("ask_ai", {
+            endpoint: endpointValue,
+            apiKey: apiKeyValue,
+            model: modelValue,
+            messages: newMessages,
+            enableThinking: enableThinkingState
+          });
+    
+          let finalResponse = response;
+    
+          if (!enableThinkingState) {
+            finalResponse = finalResponse.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+          } else {
+            finalResponse = finalResponse.replace(/<think>([\s\S]*?)<\/think>/gi, (_match: string, p1: string) => {
+                return `🤔 **Quá trình suy nghĩ:**\n${p1.trim().split('\n').map((line: string) => `> ${line}`).join('\n')}\n\n---\n\n`;
+            });
+          }
+    
+          setChatHistory([...newMessages, { role: "assistant", content: finalResponse }]);
+        } catch (err: any) {
+          setError(err.toString());
+        } finally {
+          setLoading(false);
+        }
       } else {
-        finalResponse = finalResponse.replace(/<think>([\s\S]*?)<\/think>/gi, (_match: string, p1: string) => {
-            return `🤔 **Quá trình suy nghĩ:**\n${p1.trim().split('\n').map((line: string) => `> ${line}`).join('\n')}\n\n---\n\n`;
-        });
-      }
+        setIsStreaming(true);
+        setStreamingContent("");
+        setStreamingReasoning("");
+        
+        let curContent = "";
+        let curReasoning = "";
 
-      setChatHistory([...newMessages, { role: "assistant", content: finalResponse }]);
+        const unlistenChunk = await listen<{ content: string; reasoning: string }>("ai-stream-chunk", (event) => {
+            const { content, reasoning } = event.payload;
+            if (content) curContent += content;
+            if (reasoning) curReasoning += reasoning;
+            setStreamingContent(curContent);
+            setStreamingReasoning(curReasoning);
+        });
+
+        const unlistenDone = await listen("ai-stream-done", () => {
+            unlistenChunk();
+            unlistenDone();
+            setIsStreaming(false);
+
+            let finalResponse = curContent;
+            if (enableThinkingState && curReasoning) {
+                const formattedReasoning = `🤔 **Quá trình suy nghĩ:**\n${curReasoning.trim().split('\n').map((line: string) => `> ${line}`).join('\n')}\n\n---\n\n`;
+                finalResponse = formattedReasoning + finalResponse;
+            }
+            
+            setChatHistory(prev => [...prev, { role: "assistant", content: finalResponse }]);
+            setStreamingContent("");
+            setStreamingReasoning("");
+            setLoading(false);
+        });
+
+        try {
+            await invoke("ask_ai_stream", {
+                endpoint: endpointValue,
+                apiKey: apiKeyValue,
+                model: modelValue,
+                messages: newMessages,
+                enableThinking: enableThinkingState
+            });
+        } catch(err: any) {
+            unlistenChunk();
+            unlistenDone();
+            setIsStreaming(false);
+            setError(err.toString());
+            setLoading(false);
+        }
+      }
     } catch (err: any) {
       setError(err.toString());
-    } finally {
       setLoading(false);
     }
   };
@@ -354,7 +416,7 @@ export default function ChatWindow() {
       <div ref={chatContainerRef} className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-zinc-900/50 space-y-4">
         {chatHistory.filter(m => m.role !== 'system').map((msg, idx) => (
           <div key={idx} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`p-3 rounded-2xl max-w-[85%] ${msg.role === 'user' ? 'bg-blue-600 text-white' : 'bg-zinc-800 text-zinc-300'} prose prose-sm prose-invert leading-relaxed overflow-hidden break-words shrink-0`}>
+            <div className={`p-3 rounded-2xl ${msg.role === 'user' ? 'bg-blue-600 text-white max-w-[85%]' : 'bg-zinc-800 text-zinc-300 max-w-[95%]'} prose prose-sm prose-invert leading-relaxed break-words shrink-0`}>
               {msg.role === 'user' ? (
                 <div>
                   <div className="whitespace-pre-wrap">
@@ -377,7 +439,7 @@ export default function ChatWindow() {
                   )}
                 </div>
               ) : (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                   {msg.content || ""}
                 </ReactMarkdown>
               )}
@@ -385,14 +447,34 @@ export default function ChatWindow() {
           </div>
         ))}
 
-        {loading && (
+        {(isStreaming || (loading && !isStreaming)) && (
           <div className="flex items-center justify-start">
-            <div className="flex items-center gap-2 text-zinc-400 p-3 rounded-2xl bg-zinc-800 float-animation w-auto">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span className="text-sm">Đang suy nghĩ...</span>
+            <div className={`p-3 rounded-2xl max-w-[95%] bg-zinc-800 text-zinc-300 prose prose-sm prose-invert leading-relaxed break-words shrink-0`}>
+              {isStreaming ? (
+                <>
+                  {streamingReasoning && (
+                     <div className="mb-4 text-zinc-400 italic border-l-2 border-blue-500/50 pl-3 pr-2">
+                       <div className="text-xs font-semibold text-blue-400 mb-1 flex items-center gap-1">
+                         <Loader2 className="w-3 h-3 animate-spin" />
+                         Đang suy nghĩ...
+                       </div>
+                       <div className="whitespace-pre-wrap text-xs">{streamingReasoning}</div>
+                     </div>
+                  )}
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                    {streamingContent || (streamingReasoning ? "" : "...")}
+                  </ReactMarkdown>
+                </>
+              ) : (
+                <div className="flex items-center gap-2 text-zinc-400 p-1 float-animation w-auto">
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span className="text-sm">Đang suy nghĩ...</span>
+                </div>
+              )}
             </div>
           </div>
         )}
+        
         {error && (
           <div className="p-3 bg-red-500/10 text-red-400 rounded-xl border border-red-500/20 text-sm">
             {error}

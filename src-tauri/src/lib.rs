@@ -161,6 +161,78 @@ async fn ask_ai(endpoint: String, api_key: String, model: String, messages: serd
     }
 }
 
+#[tauri::command]
+async fn ask_ai_stream(app: AppHandle, endpoint: String, api_key: String, model: String, messages: serde_json::Value, enable_thinking: Option<bool>) -> Result<(), String> {
+    use reqwest::Client;
+    use serde_json::json;
+    use tauri::Emitter;
+    use eventsource_stream::Eventsource;
+    use futures_util::StreamExt;
+
+    let client = Client::new();
+    let thinking_enabled = enable_thinking.unwrap_or(true);
+    
+    let body = json!({
+        "model": model,
+        "messages": messages,
+        "stream": true,
+        "chat_template_kwargs": {
+            "enable_thinking": thinking_enabled
+        }
+    });
+
+    let mut req = client.post(&endpoint).header("Content-Type", "application/json");
+        
+    if !api_key.is_empty() {
+        req = req.header("Authorization", format!("Bearer {}", api_key));
+    }
+
+    let res = req.json(&body)
+        .send()
+        .await
+        .map_err(|e| format!("Network Error: {}", e))?;
+
+    if !res.status().is_success() {
+        let status = res.status();
+        let error_text = res.text().await.unwrap_or_default();
+        return Err(format!("API Error ({}): {}", status, error_text));
+    }
+
+    let mut stream = res.bytes_stream().eventsource();
+
+    while let Some(event) = stream.next().await {
+        match event {
+            Ok(evt) => {
+                let data = evt.data;
+                if data == "[DONE]" {
+                    break;
+                }
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                    if let Some(choices) = parsed["choices"].as_array() {
+                        if let Some(choice) = choices.first() {
+                            let delta = &choice["delta"];
+                            let content = delta["content"].as_str().unwrap_or("");
+                            let reasoning = delta["reasoning_content"].as_str().unwrap_or("");
+                            
+                            if !content.is_empty() || !reasoning.is_empty() {
+                                let _ = app.emit("ai-stream-chunk", json!({
+                                    "content": content,
+                                    "reasoning": reasoning,
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    
+    let _ = app.emit("ai-stream-done", json!({}));
+
+    Ok(())
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.show();
@@ -368,7 +440,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcuts, hide_prompt, minimize_to_tray, resize_prompt_window, resize_chat_window, adjust_chat_window_size, ask_ai])
+        .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcuts, hide_prompt, minimize_to_tray, resize_prompt_window, resize_chat_window, adjust_chat_window_size, ask_ai, ask_ai_stream])
         .setup(move |app| {
             setup_tray(app)?;
 

@@ -12,6 +12,7 @@ export default function App() {
   const [systemPrompt, setSystemPrompt] = useState("");
   const [userPrompt, setUserPrompt] = useState("");
   const [enableThinking, setEnableThinking] = useState(true);
+  const [enableStream, setEnableStream] = useState(true);
   const [isSaved, setIsSaved] = useState(false);
 
   const handleShortcutKeyDown = (setter: (val: string) => void) => (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -57,6 +58,9 @@ export default function App() {
 
       const storedThink = await store.get<{ value: boolean }>("enableThinking");
       if (storedThink !== null && storedThink !== undefined) setEnableThinking(storedThink.value);
+
+      const storedStream = await store.get<{ value: boolean }>("enableStream");
+      if (storedStream !== null && storedStream !== undefined) setEnableStream(storedStream.value);
     }
     loadSettings();
   }, []);
@@ -71,6 +75,7 @@ export default function App() {
     await store.set("systemPrompt", { value: systemPrompt });
     await store.set("userPrompt", { value: userPrompt });
     await store.set("enableThinking", { value: enableThinking });
+    await store.set("enableStream", { value: enableStream });
     await store.save();
 
     try {
@@ -202,7 +207,7 @@ export default function App() {
               />
             </div>
 
-            <div className="col-span-1 md:col-span-2 flex items-center pt-2">
+            <div className="col-span-1 md:col-span-2 flex flex-col gap-3 pt-2">
               <label className="flex items-center gap-3 text-sm font-medium text-zinc-300 cursor-pointer hover:text-white transition-colors">
                 <input 
                   type="checkbox" 
@@ -211,6 +216,16 @@ export default function App() {
                   className="w-4 h-4 cursor-pointer accent-blue-500"
                 />
                 Cho phép AI tư duy ngầm (Thinking) - Bỏ tích để ép AI trả lời ngay lập tức
+              </label>
+
+              <label className="flex items-center gap-3 text-sm font-medium text-zinc-300 cursor-pointer hover:text-white transition-colors">
+                <input 
+                  type="checkbox" 
+                  checked={enableStream}
+                  onChange={(e) => setEnableStream(e.target.checked)}
+                  className="w-4 h-4 cursor-pointer accent-blue-500"
+                />
+                Respond Streaming (Chữ hiện ra dần dần thay vì đợi chờ)
               </label>
             </div>
           </div>
