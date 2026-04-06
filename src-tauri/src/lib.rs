@@ -13,6 +13,7 @@ struct AppState {
     last_screenshot: Mutex<Option<String>>,
     capture_shortcut: Mutex<String>,
     chat_shortcut: Mutex<String>,
+    active_session: Mutex<Option<String>>,
 }
 
 #[tauri::command]
@@ -54,10 +55,21 @@ fn register_shortcuts(app: AppHandle, capture_shortcut: String, chat_shortcut: S
 
 #[tauri::command]
 fn hide_prompt(app: AppHandle) {
+    let state: tauri::State<AppState> = app.state();
+    *state.active_session.lock().unwrap() = None;
     if let Some(win) = app.get_webview_window("prompt") {
         let _ = win.hide();
     }
     if let Some(win) = app.get_webview_window("chat") {
+        let _ = win.hide();
+    }
+}
+
+#[tauri::command]
+fn minimize_to_tray(app: AppHandle, label: String) {
+    let state: tauri::State<AppState> = app.state();
+    *state.active_session.lock().unwrap() = Some(label.clone());
+    if let Some(win) = app.get_webview_window(&label) {
         let _ = win.hide();
     }
 }
@@ -97,15 +109,20 @@ fn adjust_chat_window_size(app: AppHandle, width: f64, height: f64) {
 }
 
 #[tauri::command]
-async fn ask_ai(endpoint: String, api_key: String, model: String, messages: serde_json::Value) -> Result<String, String> {
+async fn ask_ai(endpoint: String, api_key: String, model: String, messages: serde_json::Value, enable_thinking: Option<bool>) -> Result<String, String> {
     use reqwest::Client;
     use serde_json::json;
 
     let client = Client::new();
     
+    let thinking_enabled = enable_thinking.unwrap_or(true);
+    
     let body = json!({
         "model": model,
-        "messages": messages
+        "messages": messages,
+        "chat_template_kwargs": {
+            "enable_thinking": thinking_enabled
+        }
     });
 
     let mut req = client.post(&endpoint).header("Content-Type", "application/json");
@@ -316,6 +333,7 @@ pub fn run() {
             last_screenshot: Mutex::new(None),
             capture_shortcut: Mutex::new("Ctrl+Shift+KeyO".to_string()),
             chat_shortcut: Mutex::new("Ctrl+Shift+KeyI".to_string()),
+            active_session: Mutex::new(None),
         })
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(
@@ -323,6 +341,20 @@ pub fn run() {
                 .with_handler(move |app, shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
                         let state: tauri::State<AppState> = app.state();
+                        
+                        // Check for active minimized session first
+                        let active = state.active_session.lock().unwrap().clone();
+                        if let Some(label) = active {
+                            if let Some(win) = app.get_webview_window(&label) {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                                return;
+                            } else {
+                                // Window no longer exists, clear session
+                                *state.active_session.lock().unwrap() = None;
+                            }
+                        }
+                        
                         let capture_sc = state.capture_shortcut.lock().unwrap().clone();
                         let chat_sc = state.chat_shortcut.lock().unwrap().clone();
                         
@@ -336,7 +368,7 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcuts, hide_prompt, resize_prompt_window, resize_chat_window, adjust_chat_window_size, ask_ai])
+        .invoke_handler(tauri::generate_handler![get_last_screenshot, register_shortcuts, hide_prompt, minimize_to_tray, resize_prompt_window, resize_chat_window, adjust_chat_window_size, ask_ai])
         .setup(move |app| {
             setup_tray(app)?;
 

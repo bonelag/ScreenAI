@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { load } from "@tauri-apps/plugin-store";
-import { Send, Loader2, X, Maximize } from "lucide-react";
+import { Send, Loader2, X, Maximize, Minus } from "lucide-react";
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -186,11 +186,7 @@ export default function Prompt() {
       const modelValue = model?.value || "gpt-4o";
 
       const enableThinkingState = storedThink !== null && storedThink !== undefined ? storedThink.value : true;
-      let sysPromptVal = storedSys?.value || "";
-      
-      if (!enableThinkingState) {
-        sysPromptVal += "\n\nCRITICAL INSTRUCTION: You MUST answer directly and IMMEDIATELY. DO NOT use <think> tags. DO NOT output any reasoning or thought process. Give the final answer outright.";
-      }
+      const sysPromptVal = storedSys?.value || "";
       
       const userPromptTpl = storedUser?.value || "{prompt}";
       
@@ -229,7 +225,8 @@ export default function Prompt() {
         endpoint: endpointValue,
         apiKey: apiKeyValue,
         model: modelValue,
-        messages: newMessages
+        messages: newMessages,
+        enableThinking: enableThinkingState
       });
 
       let finalResponse = response;
@@ -286,13 +283,22 @@ export default function Prompt() {
             <div className="w-8 h-1 bg-zinc-600/50 rounded-full" />
             <span className="text-xs text-zinc-500 select-none">ScreenAI Chat</span>
           </div>
-          <button
-            onClick={() => invoke("hide_prompt").catch(console.error)}
-            className="p-1.5 text-zinc-400 hover:text-white hover:bg-red-500/80 rounded-lg transition-all cursor-pointer"
-            title="Đóng"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => invoke("minimize_to_tray", { label: "prompt" }).catch(console.error)}
+              className="p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-700 rounded-lg transition-all cursor-pointer"
+              title="Thu nhỏ"
+            >
+              <Minus className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => invoke("hide_prompt").catch(console.error)}
+              className="p-1.5 text-zinc-400 hover:text-white hover:bg-red-500/80 rounded-lg transition-all cursor-pointer"
+              title="Đóng"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Chat Messages */}
@@ -348,12 +354,24 @@ export default function Prompt() {
             >
               <Maximize className="w-4 h-4" />
             </button>
-            <input
+            <textarea
               autoFocus
               value={prompt}
-              onChange={(e) => setPrompt(e.target.value)}
+              onChange={(e) => {
+                setPrompt(e.target.value);
+                e.target.style.height = 'auto';
+                e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSubmit(e);
+                }
+              }}
               placeholder="Hỏi tiếp..."
-              className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500/50 transition-all"
+              rows={1}
+              className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500/50 transition-all resize-none overflow-y-auto"
+              style={{ maxHeight: '120px' }}
             />
             <button
               type="submit"
@@ -467,13 +485,22 @@ export default function Prompt() {
              }}
           >
              <div className="w-12 h-1.5 bg-zinc-600/50 rounded-full" />
-             <button
-               onClick={() => invoke("hide_prompt").catch(console.error)}
-               className="p-1 text-zinc-400 hover:text-white hover:bg-red-500/80 rounded-lg transition-all cursor-pointer"
-               title="Đóng"
-             >
-               <X className="w-3.5 h-3.5" />
-             </button>
+             <div className="flex items-center gap-1">
+               <button
+                 onClick={() => invoke("minimize_to_tray", { label: "prompt" }).catch(console.error)}
+                 className="p-1 text-zinc-400 hover:text-white hover:bg-zinc-700 rounded-lg transition-all cursor-pointer"
+                 title="Thu nhỏ"
+               >
+                 <Minus className="w-3.5 h-3.5" />
+               </button>
+               <button
+                 onClick={() => invoke("hide_prompt").catch(console.error)}
+                 className="p-1 text-zinc-400 hover:text-white hover:bg-red-500/80 rounded-lg transition-all cursor-pointer"
+                 title="Đóng"
+               >
+                 <X className="w-3.5 h-3.5" />
+               </button>
+             </div>
           </div>
 
           {/* Result Area */}
@@ -520,12 +547,24 @@ export default function Prompt() {
               >
                 <Maximize className="w-4 h-4" />
               </button>
-              <input
+              <textarea
                 autoFocus
                 value={prompt}
-                onChange={(e) => setPrompt(e.target.value)}
+                onChange={(e) => {
+                  setPrompt(e.target.value);
+                  e.target.style.height = 'auto';
+                  e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px';
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSubmit(e);
+                  }
+                }}
                 placeholder="Hỏi về vùng này..."
-                className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500/50 transition-all"
+                rows={1}
+                className="flex-1 bg-zinc-950 border border-zinc-800 rounded-xl px-3 py-2 text-sm text-zinc-200 outline-none focus:border-blue-500/50 transition-all resize-none overflow-y-auto"
+                style={{ maxHeight: '120px' }}
               />
               <button
                 type="submit"
