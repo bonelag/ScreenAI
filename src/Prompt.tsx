@@ -240,11 +240,11 @@ export default function Prompt() {
           });
     
           let finalResponse = response;
-    
+
           if (!enableThinkingState) {
-            finalResponse = finalResponse.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+            finalResponse = finalResponse.replace(/<think[\s\S]*?<\/think>/gi, '').trim();
           } else {
-            finalResponse = finalResponse.replace(/<think>([\s\S]*?)<\/think>/gi, (_match: string, p1: string) => {
+            finalResponse = finalResponse.replace(/<think[^>]*>([\s\S]*?)<\/think>/gi, (_match: string, p1: string) => {
                 return `🤔 **Quá trình suy nghĩ:**\n${p1.trim().split('\n').map((line: string) => `> ${line}`).join('\n')}\n\n---\n\n`;
             });
           }

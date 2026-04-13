@@ -16,6 +16,29 @@ struct AppState {
     active_session: Mutex<Option<String>>,
 }
 
+/// Strip <think>…</think> blocks from text (works when API ignores thinking toggle)
+fn regex_strip_think_tags(text: &str) -> String {
+    let mut result = text.to_string();
+    loop {
+        if let Some(start) = result.find("<think") {
+            if let Some(tag_end) = result[start..].find('>') {
+                let content_start = start + tag_end + 1;
+                if let Some(rel_end) = result[content_start..].find("</think>") {
+                    let end_tag = content_start + rel_end + "</think>".len();
+                    result.replace_range(start..end_tag, "");
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+    result.trim().to_string()
+}
+
 #[tauri::command]
 fn get_last_screenshot(state: tauri::State<AppState>) -> Result<String, String> {
     let last = state.last_screenshot.lock().unwrap();
@@ -114,14 +137,33 @@ async fn ask_ai(endpoint: String, api_key: String, model: String, messages: serd
     use serde_json::json;
 
     let client = Client::new();
-    
     let thinking_enabled = enable_thinking.unwrap_or(true);
-    
-    let body = json!({
+
+    let mut body = serde_json::json!({
         "model": model,
         "messages": messages,
-        "chat_template_kwargs": {
-            "enable_thinking": thinking_enabled
+    });
+
+    // --- DeepSeek: chat_template_kwargs ---
+    body["chat_template_kwargs"] = serde_json::json!({
+        "enable_thinking": thinking_enabled
+    });
+
+    // --- Qwen / OpenRouter: top-level enable_thinking ---
+    body["enable_thinking"] = serde_json::Value::Bool(thinking_enabled);
+
+    // --- OpenAI reasoning models (o1, o3-mini): reasoning_effort ---
+    if thinking_enabled {
+        body["reasoning"] = serde_json::json!({ "effort": "high" });
+    } else {
+        body["reasoning"] = serde_json::json!({ "effort": "low" });
+        body["reasoning_effort"] = serde_json::json!("low");
+    }
+
+    // --- OpenRouter: extra_body thinking ---
+    body["extra_body"] = serde_json::json!({
+        "thinking": {
+            "type": if thinking_enabled { "enabled" } else { "disabled" }
         }
     });
 
@@ -143,16 +185,21 @@ async fn ask_ai(endpoint: String, api_key: String, model: String, messages: serd
     }
 
     let json_res: serde_json::Value = res.json().await.map_err(|e| format!("Parse Error: {}", e))?;
-    
+
     let message = &json_res["choices"][0]["message"];
-    let content = message["content"].as_str().unwrap_or("");
+    let content = message["content"].as_str().unwrap_or("").to_string();
     let reasoning = message["reasoning_content"].as_str().unwrap_or("");
-    
+
     let mut final_content = String::new();
-    if !reasoning.is_empty() {
+    if thinking_enabled && !reasoning.is_empty() {
         final_content.push_str(&format!("<think>\n{}\n</think>\n\n", reasoning));
     }
-    final_content.push_str(content);
+    final_content.push_str(&content);
+
+    // Always strip <think> tags from content when thinking is disabled
+    if !thinking_enabled {
+        final_content = regex_strip_think_tags(&final_content);
+    }
     
     if final_content.is_empty() {
         Err("Invalid JSON response from AI".into())
@@ -171,13 +218,33 @@ async fn ask_ai_stream(app: AppHandle, endpoint: String, api_key: String, model:
 
     let client = Client::new();
     let thinking_enabled = enable_thinking.unwrap_or(true);
-    
-    let body = json!({
+
+    let mut body = serde_json::json!({
         "model": model,
         "messages": messages,
         "stream": true,
-        "chat_template_kwargs": {
-            "enable_thinking": thinking_enabled
+    });
+
+    // --- DeepSeek: chat_template_kwargs ---
+    body["chat_template_kwargs"] = serde_json::json!({
+        "enable_thinking": thinking_enabled
+    });
+
+    // --- Qwen / OpenRouter: top-level enable_thinking ---
+    body["enable_thinking"] = serde_json::Value::Bool(thinking_enabled);
+
+    // --- OpenAI reasoning models (o1, o3-mini): reasoning_effort ---
+    if thinking_enabled {
+        body["reasoning"] = serde_json::json!({ "effort": "high" });
+    } else {
+        body["reasoning"] = serde_json::json!({ "effort": "low" });
+        body["reasoning_effort"] = serde_json::json!("low");
+    }
+
+    // --- OpenRouter: extra_body thinking ---
+    body["extra_body"] = serde_json::json!({
+        "thinking": {
+            "type": if thinking_enabled { "enabled" } else { "disabled" }
         }
     });
 
@@ -214,10 +281,11 @@ async fn ask_ai_stream(app: AppHandle, endpoint: String, api_key: String, model:
                             let content = delta["content"].as_str().unwrap_or("");
                             let reasoning = delta["reasoning_content"].as_str().unwrap_or("");
                             
-                            if !content.is_empty() || !reasoning.is_empty() {
+                            let reasoning_to_emit = if thinking_enabled { reasoning } else { "" };
+                            if !content.is_empty() || !reasoning_to_emit.is_empty() {
                                 let _ = app.emit("ai-stream-chunk", json!({
                                     "content": content,
-                                    "reasoning": reasoning,
+                                    "reasoning": reasoning_to_emit,
                                 }));
                             }
                         }
